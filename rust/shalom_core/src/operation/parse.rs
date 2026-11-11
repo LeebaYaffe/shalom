@@ -713,6 +713,7 @@ fn parse_operation(
         op_mut.directives.0.retain(|d| d.name.as_str() != "observe");
     }
     let op_type = parse_operation_type(op.operation_type);
+    let op_sdl = op.to_string();
 
     // Build the network-safe copy of the operation text: same as `op`, but with
     // `@unwrap` recursively stripped off nested spreads so it never reaches a real
@@ -721,13 +722,13 @@ fn parse_operation(
     let mut network_op = op.clone();
     let network_op_mut = network_op.make_mut();
     strip_directive_from_spreads_recursive(&mut network_op_mut.selection_set, "unwrap");
-    let op_sdl = network_op.to_string();
+    let network_op_sdl = network_op.to_string();
 
     let mut query = fragment_sdls.join("\n");
     if !query.is_empty() {
         query.push('\n');
     }
-    query.push_str(&op_sdl);
+    query.push_str(&network_op_sdl);
     let mut ctx = OperationContext::new(
         global_ctx.schema_ctx.clone(),
         operation_name.clone(),

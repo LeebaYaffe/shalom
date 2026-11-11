@@ -164,8 +164,8 @@ pub struct OperationContext {
     operation_name: String,
     pub file_path: PathBuf,
     pub query: String,
-    /// Self-contained, network-safe operation text (`query Name(...) { ... }`),
-    /// with `__typename`/`id` auto-injection applied and `@unwrap` stripped, but
+    /// Self-contained operation text (`query Name(...) { ... }`),
+    /// with `__typename`/`id` auto-injection applied and `@unwrap` preserved, but
     /// without any prepended fragment SDLs and without `@observe`. Use this (not
     /// `query`, which is prefixed with fragment SDLs and would duplicate fragment
     /// definitions already emitted elsewhere) when re-registering the operation

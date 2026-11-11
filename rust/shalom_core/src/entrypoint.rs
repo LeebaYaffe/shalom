@@ -847,4 +847,104 @@ query SiteQuery {
         assert!(site_fragment.fragment_raw.contains("@unwrap"));
         assert!(!site_fragment.network_sdl.contains("@unwrap"));
     }
+
+    #[test]
+    fn operation_retains_unwrap_in_op_sdl_and_strips_from_network_query() {
+        let ctx = test_context(
+            r#"
+type Query {
+  reporteeGroups: [ReporteeGroup!]!
+  item: Item
+}
+
+interface Item {
+  id: ID!
+}
+
+type ReporteeGroup implements Item {
+  id: ID!
+  name: String!
+  members: [Member!]!
+}
+
+type Member {
+  id: ID!
+  email: String!
+}
+"#,
+        );
+        let source_path = PathBuf::from("fragment.dart");
+
+        register_fragments_from_document(
+            &ctx,
+            r#"
+fragment MemberFrag on Member @observe {
+  id
+  email
+}
+
+fragment ReporteeGroupFrag on ReporteeGroup @observe {
+  id
+  name
+  members {
+    ...MemberFrag @unwrap
+  }
+}
+"#,
+            &source_path,
+            false,
+        )
+        .unwrap();
+
+        let direct_ops = parse_document(
+            &ctx,
+            r#"
+query ReporteesQuery @observe {
+  reporteeGroups {
+    ...ReporteeGroupFrag @unwrap
+  }
+}
+"#,
+            &PathBuf::from("reportees.dart"),
+        )
+        .unwrap();
+        let direct_op = direct_ops.get("ReporteesQuery").unwrap();
+
+        assert!(direct_op.op_sdl.contains("...ReporteeGroupFrag @unwrap"));
+        assert!(direct_op.op_sdl.contains("id"));
+        assert!(!direct_op.op_sdl.contains("@observe"));
+
+        assert!(!direct_op.query.contains("@unwrap"));
+        assert!(!direct_op.query.contains("@observe"));
+        assert!(direct_op.query.contains("...ReporteeGroupFrag"));
+        assert!(direct_op.query.contains("id"));
+
+        let complex_ops = parse_document(
+            &ctx,
+            r#"
+query ComplexQuery @observe {
+  item {
+    ... on ReporteeGroup {
+      ...ReporteeGroupFrag @unwrap
+    }
+  }
+}
+"#,
+            &PathBuf::from("complex.dart"),
+        )
+        .unwrap();
+        let complex_op = complex_ops.get("ComplexQuery").unwrap();
+
+        assert!(complex_op.op_sdl.contains("...ReporteeGroupFrag @unwrap"));
+        assert!(complex_op.op_sdl.contains("__typename"));
+        assert!(complex_op.op_sdl.contains("id"));
+        assert!(!complex_op.op_sdl.contains("@observe"));
+
+        assert!(!complex_op.query.contains("@unwrap"));
+        assert!(!complex_op.query.contains("@observe"));
+        assert!(complex_op.query.contains("... on ReporteeGroup"));
+        assert!(complex_op.query.contains("...ReporteeGroupFrag"));
+        assert!(complex_op.query.contains("__typename"));
+        assert!(complex_op.query.contains("id"));
+    }
 }

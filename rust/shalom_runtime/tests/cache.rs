@@ -3109,3 +3109,136 @@ async fn delete_removes_polymorphic_entity_from_interface_list() {
     assert_eq!(remaining[0]["__typename"], "Post");
     assert_eq!(remaining[0]["title"], "GraphQL");
 }
+
+#[tokio::test]
+async fn unwrapped_fragment_subscription_receives_normalized_entity_updates() {
+    let schema = r#"
+        type Query {
+            groups: [Group!]!
+        }
+        type Mutation {
+            rename(id: ID!, name: String!): Group!
+        }
+        type Group {
+            id: ID!
+            name: String!
+        }
+    "#;
+    let fragment = "fragment GroupFrag on Group @observe { id name }";
+    let query_doc = "query DirectQuery @observe { groups { ...GroupFrag @unwrap } }";
+    let mutation_doc = "mutation RenameGroup($id: ID!, $name: String!) { rename(id: $id, name: $name) { id name } }";
+
+    let runtime = ShalomRuntime::init(schema, vec![fragment.to_string()], Default::default()).unwrap();
+    let query_op = runtime.register_operation(query_doc).unwrap();
+    let mutation_op = runtime.register_operation(mutation_doc).unwrap();
+
+    assert!(query_op.op_sdl.contains("...GroupFrag @unwrap"));
+    assert!(!query_op.op_sdl.contains("@observe"));
+    assert!(!query_op.query.contains("@unwrap"));
+    assert!(!query_op.query.contains("@observe"));
+
+    normalize(
+        &runtime,
+        &query_op,
+        json!({
+            "groups": [{ "id": "g1", "name": "before" }]
+        }),
+        None,
+    );
+
+    let sub_id = runtime.create_operation_subscription(
+        query_op.clone(),
+        None,
+        ExecutionPolicy::CacheFirst,
+    );
+    let mut stream = runtime.subscription_stream(&sub_id).unwrap();
+
+    let initial = stream.next().await.unwrap().unwrap();
+    assert_eq!(initial.data["groups"][0]["name"], "before");
+
+    let mut vars = Map::new();
+    vars.insert("id".to_string(), json!("g1"));
+    vars.insert("name".to_string(), json!("after"));
+    normalize(
+        &runtime,
+        &mutation_op,
+        json!({
+            "rename": { "id": "g1", "name": "after" }
+        }),
+        Some(vars),
+    );
+
+    let update = stream.next().await.unwrap().unwrap();
+    assert_eq!(update.data["groups"][0]["name"], "after");
+}
+
+#[tokio::test]
+async fn ordinary_observed_fragment_retains_delegated_behavior() {
+    let schema = r#"
+        type Query {
+            groups: [Group!]!
+        }
+        type Mutation {
+            rename(id: ID!, name: String!): Group!
+        }
+        type Group {
+            id: ID!
+            name: String!
+        }
+    "#;
+    let fragment = "fragment GroupFrag on Group @observe { id name }";
+    let query_doc = "query DelegatedQuery @observe { groups { ...GroupFrag } }";
+    let mutation_doc = "mutation RenameGroup($id: ID!, $name: String!) { rename(id: $id, name: $name) { id name } }";
+
+    let runtime = ShalomRuntime::init(schema, vec![fragment.to_string()], Default::default()).unwrap();
+    let query_op = runtime.register_operation(query_doc).unwrap();
+    let mutation_op = runtime.register_operation(mutation_doc).unwrap();
+
+    normalize(
+        &runtime,
+        &query_op,
+        json!({
+            "groups": [{ "id": "g1", "name": "before" }]
+        }),
+        None,
+    );
+
+    let query_sub_id = runtime.create_operation_subscription(
+        query_op.clone(),
+        None,
+        ExecutionPolicy::CacheFirst,
+    );
+    let mut query_stream = runtime.subscription_stream(&query_sub_id).unwrap();
+
+    let initial = query_stream.next().await.unwrap().unwrap();
+    assert!(initial.data["groups"][0].get("$GroupFrag").is_some());
+
+    let frag_sub_id = runtime
+        .observe_fragment(ObservedRef {
+            observable_id: "GroupFrag".to_string(),
+            anchor: "Group:g1".to_string(),
+        })
+        .unwrap();
+    let mut frag_stream = runtime.subscription_stream(&frag_sub_id).unwrap();
+
+    let frag_initial = frag_stream.next().await.unwrap().unwrap();
+    assert_eq!(frag_initial.data["name"], "before");
+
+    let mut vars = Map::new();
+    vars.insert("id".to_string(), json!("g1"));
+    vars.insert("name".to_string(), json!("after"));
+    normalize(
+        &runtime,
+        &mutation_op,
+        json!({
+            "rename": { "id": "g1", "name": "after" }
+        }),
+        Some(vars),
+    );
+
+    let frag_update = frag_stream.next().await.unwrap().unwrap();
+    assert_eq!(frag_update.data["name"], "after");
+
+    let query_timeout = tokio::time::timeout(Duration::from_millis(50), query_stream.next()).await;
+    assert!(query_timeout.is_err());
+}

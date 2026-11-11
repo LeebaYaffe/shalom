@@ -1979,3 +1979,95 @@ fn generate_registration_file(
     info!("Generated registration file: {}", gen_path.display());
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shalom_core::context::ShalomGlobalContext;
+    use shalom_core::entrypoint::register_fragments_from_document;
+    use shalom_core::shalom_config::ShalomConfig;
+    use std::fs;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_generate_registration_file_retains_unwrap() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "shalom_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let schema_path = temp_dir.join("schema.graphql");
+        let schema_content = r#"
+type Query {
+  reporteeGroups: [ReporteeGroup!]!
+}
+
+type ReporteeGroup {
+  id: ID!
+  name: String!
+}
+"#;
+        fs::write(&schema_path, schema_content).unwrap();
+
+        let schema_ctx = shalom_core::entrypoint::parse_schema(schema_content).unwrap();
+        let ctx = ShalomGlobalContext::new(
+            schema_ctx,
+            ShalomConfig {
+                project_root: temp_dir.clone(),
+                ..Default::default()
+            },
+            schema_path,
+        );
+
+        register_fragments_from_document(
+            &ctx,
+            r#"
+fragment ReporteeGroupFrag on ReporteeGroup @observe {
+  id
+  name
+}
+"#,
+            &PathBuf::from("fragment.dart"),
+            false,
+        )
+        .unwrap();
+
+        let widgets = vec![
+            WidgetAnnotation {
+                widget_kind: WidgetKind::Fragment,
+                class_name: "ReporteeGroupFrag".to_string(),
+                sdl: r#"on ReporteeGroup {
+  id
+  name
+}"#
+                .to_string(),
+                source_path: PathBuf::from("fragment.dart"),
+            },
+            WidgetAnnotation {
+                widget_kind: WidgetKind::Query,
+                class_name: "ReporteeGroupsQuery".to_string(),
+                sdl: r#"{
+  reporteeGroups {
+    ...ReporteeGroupFrag @unwrap
+  }
+}"#
+                .to_string(),
+                source_path: PathBuf::from("reportees.dart"),
+            },
+        ];
+
+        generate_registration_file(&temp_dir, &widgets, &ctx, false).unwrap();
+
+        let generated_file = temp_dir.join("shalom_init.shalom.dart");
+        let content = fs::read_to_string(&generated_file).unwrap();
+
+        assert!(content.contains("...ReporteeGroupFrag @unwrap"));
+        assert!(content.contains("query ReporteeGroupsQuery @observe"));
+        assert!(content.contains("id"));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+}
